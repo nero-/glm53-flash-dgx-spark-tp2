@@ -28,6 +28,9 @@ if [ "${1:-}" = 1 ] || [ "${1:-}" = 2 ]; then
   shift
 fi
 PAIR_NUM="${PAIR_CLUSTER:-1}"
+# Remote mode: PAIR_TS=1 routes both ranks through the Tailscale aliases
+# (gx10-r0-ts / gx10-r1-ts via ProxyJump over the fabric, same for r2/r3).
+[ "${PAIR_TS:-0}" = 1 ] && { R0=${R0}-ts; R1=${R1}-ts; }
 case "$PAIR_NUM" in
   1) R0=gx10-r0; R1=gx10-r1; RF0=0; RF1=1 ;;
   2) R0=gx10-r2; R1=gx10-r3; RF0=2; RF1=3 ;;
