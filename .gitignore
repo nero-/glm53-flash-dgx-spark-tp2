@@ -1,0 +1,9 @@
+bench/.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# local reference clones, not part of this repo
+ref-tonyd2wild-dflash2/
+._*
+.DS_Store
