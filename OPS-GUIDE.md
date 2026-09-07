@@ -1,11 +1,14 @@
 # GLM-5.3-Flash TP2 pair — operator guide (no-agent edition)
 
-Two DGX Sparks serving **GLM-5.3-Flash-NVFP4-Spark** as one TP2 model.
+Two DGX Sparks serving **GLM-5.3-Flash** as one TP2 model, both checkpoints —
+the NVFP4-Spark quant and the non-spark NVFP4 quant — on the
+`glm53-flash-nvfp4-devspark2` image (b12x loader + MTP3/DFlash2).
 `gx10-r0` is the API head (rank 0), `gx10-r1` is the headless worker (rank 1).
-Vision: 4 images + 1 video per prompt. MTP3 speculator; ~1.2M-token KV pool at the
-current 9-GiB pin on cluster 1. A SECOND cluster exists: `gx10-r2` (head) +
-`gx10-r3` (worker) running the newest `devc646` image with two profiles
-(mtp3 / dflash2, both with video) — see "Second cluster" below.
+Vision: 4 images per prompt (+1 video on `df-nvfp4`). Four profiles — pick one
+per boot (KV pins 11.0 / 6.5 / 12.5 / 4.5 GiB; see the table below).
+A SECOND cluster exists: `gx10-r2` (head) + `gx10-r3` (worker) running the
+parked `devc646` image with its own two profiles (mtp3 / dflash2, both with
+video) — see "Second cluster" below; leave it alone during cluster-1 work.
 
 ## Hosts and access
 
@@ -39,21 +42,25 @@ Env-file profiles on cluster 1 (r0 / r1) — pick ONE matching pair per boot:
 
 | files (r0 / r1) | what it is |
 |---|---|
-| `rank-0-master.env` / `rank-1-master.env` | **MTP3 — default daily driver**: batch 8192, KV pinned 9 GiB (~1.235M tokens), 512k context, images |
-| `rank-0-multi.env` / `rank-1-multi.env` | **MTP3 + video**: batch 8192, KV pinned 6.5 GiB, video enabled |
-| `rank-0-df.env` / `rank-1-df.env` | **DFlash2@7**: batch 4096, KV pinned 9 GiB (~558k tokens), 256k context, images |
+| `rank-{0,1}-mtp3-spark.env` | **MTP3 spark quant — daily driver**: batch 8192, KV pinned 11.0 GiB (11811160064), 512k context, 4 img / 0 vid, marlin MTP experts |
+| `rank-{0,1}-mtp3-nvfp4.env` | **MTP3 non-spark quant**: batch 8192, KV pinned 6.5 GiB (6979321856), 512k context, 4 img / 0 vid, humming MTP experts |
+| `rank-{0,1}-df-spark.env` | **DFlash2@7 spark**: batch 4096, KV pinned 12.5 GiB (13421772800), 256k context, 4 img / 0 vid |
+| `rank-{0,1}-df-nvfp4.env` | **DFlash2@7 non-spark**: batch 4096, KV pinned 4.5 GiB (4831838208), 256k context, 4 img / 1 vid |
+
+(DFlash2 draft is CC BY-NC-ND — non-commercial; MTP3 is the commercial path.)
 
 ## Start it — one command (pairctl.sh)
 
-From the Mac, in this repo's directory:
+From the machine that hosts the repo clone, in its directory (positional
+first arg = cluster, default 1; default profile `mtp3-spark`):
 
 ```bash
-./pairctl.sh up            # MTP3 profile (default)
-./pairctl.sh up df         # DFlash2 profile
-./pairctl.sh down          # stop both ranks
-./pairctl.sh status        # container state on both nodes
-./pairctl.sh logs 0        # follow head logs (1 = worker)
-./pairctl.sh check         # validate env files without starting
+./pairctl.sh 1 up mtp3-spark   # or mtp3-nvfp4 / df-spark / df-nvfp4
+./pairctl.sh 1 down            # stop both ranks (default profile; names share the teardown)
+./pairctl.sh 1 status          # container state on both nodes
+./pairctl.sh 1 logs 0          # follow head logs (1 = worker); optional [profile]
+./pairctl.sh 1 check           # validate env files without starting
+# first boot on a NEW image (cold JIT): PAIR_HEALTH_TIMEOUT=1900 ./pairctl.sh 1 up <profile>
 ```
 
 `up` does everything below for you: fixes swappiness, re-checks the RoCE GID
@@ -62,8 +69,8 @@ stale containers, starts **worker first, then head**, and waits for the API to
 come healthy. It asks once for the pair's sudo password and caches it in
 `<sudo-password-file>` (never in git).
 
-## Second cluster (gx10-r2 / gx10-r3) — `devc646`
-Everything above applies to cluster 1. The second pair runs the newest
+## Second cluster (gx10-r2 / gx10-r3) — `devc646` (parked line)
+Everything above applies to cluster 1. The second pair runs the
 `local/vllm:glm53-flash-nvfp4-devc646` image (r25-line + PR #646; see
 RECIPE.md "Second cluster + the devc646 line") and is controlled by the SAME
 pairctl with an env flag:
@@ -98,35 +105,40 @@ ssh -4 gx10-r0 'echo REDACTED-SUDO-PASSWORD | sudo -S sh -c "echo 0 > /proc/sys/
 ssh -4 gx10-r1 'echo REDACTED-SUDO-PASSWORD | sudo -S sh -c "echo 0 > /proc/sys/vm/swappiness"'
 
 # 2. Check the RoCE GID index (this shifts between reboots sometimes):
-ssh -4 gx10-r0 show_gids        # find IPv4 <r0-fabric-ip> -> its INDEX (expect 3)
-ssh -4 gx10-r1 show_gids        # find IPv4 <r1-fabric-ip> -> its INDEX (expect 4)
-# If the index differs, edit it in the env files you plan to use:
-#   r0: nano ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement/rank-0-master.env
-#   r1: same path, rank-1-master.env   -> line NCCL_IB_GID_INDEX=<index>
+ssh -4 gx10-r0 show_gids        # find IPv4 <r0-fabric-ip> -> its INDEX (currently 3)
+ssh -4 gx10-r1 show_gids        # find IPv4 <r1-fabric-ip> -> its INDEX (currently 3; was 4 pre-2026-09-04)
+# If the index differs, edit it in the env files you plan to use (or just run
+# pairctl — it re-checks and auto-fixes every `up`):
+#   r0: nano ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement/rank-0-mtp3-spark.env
+#   r1: same path, rank-1-mtp3-spark.env   -> line NCCL_IB_GID_INDEX=<index>
 
 # 3. Drop page cache on both (vLLM counts it against free memory):
 ssh -4 gx10-r0 'echo REDACTED-SUDO-PASSWORD | sudo -S sh -c "sync; echo 3 > /proc/sys/vm/drop_caches"'
 ssh -4 gx10-r1 'echo REDACTED-SUDO-PASSWORD | sudo -S sh -c "sync; echo 3 > /proc/sys/vm/drop_caches"'
 
-# 4. Start WORKER first, then HEAD (about 3-5 min to load):
-ssh -4 gx10-r1 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --run rank-1-master.env'
-ssh -4 gx10-r0 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --run rank-0-master.env'
+# 4. Start WORKER first, then HEAD (about 3-5 min to load); here: mtp3-spark,
+# pairctl passes the EXTRA flags (--kda-prefill-backend b12x
+# --recurrent-checkpoint-policy request_boundaries) on every boot:
+ssh -4 gx10-r1 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --run rank-1-mtp3-spark.env --kda-prefill-backend b12x --recurrent-checkpoint-policy request_boundaries'
+ssh -4 gx10-r0 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --run rank-0-mtp3-spark.env --kda-prefill-backend b12x --recurrent-checkpoint-policy request_boundaries'
 
 # 5. Verify it is healthy (expect "GPU KV cache size", "Application startup complete", health OK):
-ssh -4 gx10-r0 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --verify rank-0-master.env'
+ssh -4 gx10-r0 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --verify rank-0-mtp3-spark.env'
 ```
 
-Everyday verbs (same dir on the node):
+Everyday verbs (same dir on the node; here `rank-0-mtp3-spark.env`, use the
+env file you booted):
 
 ```bash
-bash glm53_pair_serve.sh --status rank-0-master.env      # is the container up?
-bash glm53_pair_serve.sh --logs   rank-0-master.env      # follow logs (Ctrl-C to stop)
-bash glm53_pair_serve.sh --down   rank-0-master.env      # stop this rank (do BOTH ranks)
-bash glm53_pair_serve.sh --check  rank-0-master.env      # dry-run: validate + print command
+bash glm53_pair_serve.sh --status rank-0-mtp3-spark.env      # is the container up?
+bash glm53_pair_serve.sh --logs   rank-0-mtp3-spark.env      # follow logs (Ctrl-C to stop)
+bash glm53_pair_serve.sh --down   rank-0-mtp3-spark.env      # stop this rank (do BOTH ranks)
+bash glm53_pair_serve.sh --check  rank-0-mtp3-spark.env      # dry-run: validate + print command
 ```
 
-Switch profiles (mtp3 1M ↔ dflash2): `--down` both ranks, then `--run` the
-other env pair (e.g. `rank-1-df.env` on r1, `rank-0-df.env` on r0).
+Switch profiles (mtp3 ↔ dflash2, spark ↔ nvfp4): `--down` both ranks, then
+`--run` the other env pair (e.g. `rank-1-df-nvfp4.env` on r1,
+`rank-0-df-nvfp4.env` on r0) — or just `./pairctl.sh 1 up <profile>`.
 
 ## Using the API once it is up
 
@@ -165,7 +177,8 @@ curl http://<r0-lan-ip>:8000/v1/chat/completions \
 
 ## Re-running the benchmark
 
-On the Mac (uses the venv in this repo):
+On the operator machine (uses the venv in this repo; on Linux rebuild it
+once: `python3 -m venv bench/.venv && bench/.venv/bin/pip install httpx rich`):
 
 ```bash
 cd /Users/jg/Agent/Builds/glm53-flash-dgx-spark-tp2/bench
