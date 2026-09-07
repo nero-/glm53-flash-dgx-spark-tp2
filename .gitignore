@@ -13,3 +13,6 @@ bench/*.json
 bench/*.txt
 runs/*.json
 runs/*.txt
+
+# raw bench artifacts written without an extension (--output NAME)
+bench/glm5.3flash-*
