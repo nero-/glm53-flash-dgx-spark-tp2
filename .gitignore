@@ -7,3 +7,9 @@ __pycache__/
 ref-tonyd2wild-dflash2/
 ._*
 .DS_Store
+
+# raw bench artifacts — summarize numbers in runs/run-NN-*.md; keep json/txt local
+bench/*.json
+bench/*.txt
+runs/*.json
+runs/*.txt
