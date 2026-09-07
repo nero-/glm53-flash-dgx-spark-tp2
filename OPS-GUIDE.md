@@ -42,7 +42,7 @@ Env-file profiles on cluster 1 (r0 / r1) — pick ONE matching pair per boot:
 
 | files (r0 / r1) | what it is |
 |---|---|
-| `rank-{0,1}-mtp3-spark.env` | **MTP3 spark quant — daily driver**: batch 8192, KV pinned 11.0 GiB (11811160064), 512k context, 4 img / 0 vid, marlin MTP experts |
+| `rank-{0,1}-mtp3-spark.env` | **MTP3 spark quant — daily driver**: batch 8192, KV pinned 9.5 GiB (10200547328); 11.0 ran 120.6 GiB used on r0 — the 9.5 target keeps steady ~117-119, 512k context, 4 img / 0 vid, marlin MTP experts |
 | `rank-{0,1}-mtp3-nvfp4.env` | **MTP3 non-spark quant**: batch 8192, KV pinned 6.5 GiB (6979321856), 512k context, 4 img / 0 vid, humming MTP experts |
 | `rank-{0,1}-df-spark.env` | **DFlash2@7 spark**: batch 4096, KV pinned 12.5 GiB (13421772800), 256k context, 4 img / 0 vid |
 | `rank-{0,1}-df-nvfp4.env` | **DFlash2@7 non-spark**: batch 4096, KV pinned 4.5 GiB (4831838208), 256k context, 4 img / 1 vid |

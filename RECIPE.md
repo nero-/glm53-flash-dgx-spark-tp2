@@ -6,7 +6,7 @@ stays loaded on both nodes as rollback until devspark2 passes). One image
 serves **both** GLM-5.3-Flash checkpoints on cluster 1; four profiles =
 2 speculators × 2 quants:
 - `mtp3-spark` / `mtp3-nvfp4` — MTP3 adaptive (1/3/32), daily driver, ctx
-  512k, batch 8192. Spark quant: KV pin 11.0 GiB (11811160064) + marlin MTP
+  512k, batch 8192. Spark quant: KV pin 9.5 GiB (10200547328; 1.5 GiB below the 11.0 that ran 120.6 used on r0) + marlin MTP
   experts; non-spark quant: pin 6.5 GiB (6979321856), MXFP8 MTP experts →
   humming (no override).
 - `df-spark` / `df-nvfp4` — DFlash2@7 (draft
@@ -102,11 +102,28 @@ loader; the devspark era had to run `LOAD_FORMAT=instanttensor` because of
 lesson 22 — reverted to b12x at devspark2) · mtp3 adaptive (1/3/32) or
 dflash@7 · MTP experts: non-spark quant **MXFP8 → humming** (no
 `MTP_MOE_BACKEND` override); spark quant **NVFP4 → `MTP_MOE_BACKEND=marlin`** ·
-fp8 KV · B12X attention/MoE/linear · `--kda-prefill-backend
-b12x` · `--recurrent-checkpoint-policy request_boundaries` ·
-`--mamba-cache-mode align` · piecewise graphs · prefix caching + chunked
-prefill ON · `VLLM_ENABLE_PCIE_ALLREDUCE=0` · LD_PRELOAD = CUDA 13.2 compat
-shim + patched NCCL 2.30.4 · `VLLM_B12X_MOE_FP4_FORCE_A16=0`.
+fp8 KV · B12X attention/MoE/linear · `KDA_PREFILL_BACKEND=flashkda` (the
+`vllm/_flashkda_C.abi3.so` extension IS in the devspark2 image — RECIPE's old
+"flashkda not present in the public builder" note is stale; `b12x` KDA prefill
+fell back to a heuristic policy at this pin) · `VLLM_GDN_DECODE_KERNEL=b12x`
+(engine default is `cuda`!) · `--recurrent-checkpoint-policy
+request_boundaries` · `--mamba-cache-mode align` · piecewise graphs · prefix
+caching + chunked prefill ON · `VLLM_ENABLE_PCIE_ALLREDUCE=0` · LD_PRELOAD =
+CUDA 13.2 compat shim + patched NCCL 2.30.4 ·
+`VLLM_B12X_MOE_FP4_FORCE_A16=0`.
+
+Reference-env settings adopted 2026-09-07 (from Luke's
+testing_glm53rankenv.txt, non-KV parts): `BLOCK_SIZE=256` + split pages
+2048/256 + `PREFIX_MATCH_UNIT=256` (El8 geometry — block-table unit 256,
+no slot inflation), `KDA_PREFILL_BACKEND=flashkda`,
+`VLLM_GDN_DECODE_KERNEL=b12x`, `MM_PROCESSOR_CACHE_GB=0` (vLLM default 4 GiB
+per process of HOST unified memory otherwise), `MM_ENCODER_TP_MODE=data`
+(each rank runs the full encoder, no encoder collectives over RoCE), and
+**MTP5** on the mtp profiles (`NUM_SPECULATIVE_TOKENS=5`; reference note: 3
+was the old qualified depth, 5 was a wash pre-#667 — under test again with
+the fixed loader). KV pins and MM caps keep the project's own numbers.
+Boot log at the 9.5 GiB pin: `physical page sizes [1148928, 2293760]`,
+`GPU KV cache size: 1,274,502 tokens` (2.43× a 512k request).
 
 Memory envelope (cluster 1, non-spark quant): worker ≈ 117 GiB used at a
 6.5 GiB KV pin; **the head runs ~2.5 GiB heavier** (API + engine + MM

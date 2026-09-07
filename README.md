@@ -13,7 +13,7 @@ Judgement** arm64 vLLM stack from
 | Image | `local/vllm:glm53-flash-nvfp4-devspark2`, built with the arm64/SM121 retarget of `blackwell-llm-docker` (CUDA 13.2 / torch 2.13.0+cu132); previous line `…-devspark` kept as rollback |
 | Weights | [`local-inference-lab/GLM-5.3-Flash-NVFP4`](https://huggingface.co/local-inference-lab/GLM-5.3-Flash-NVFP4) (non-spark, 199.4 GB; MXFP8 MTP experts → humming) + `GLM-5.3-Flash-NVFP4-Spark` (spark quant; NVFP4 MTP experts → marlin) |
 | Speculators | built-in MTP3 (adaptive 1–3) and DFlash2 draft @ 7 tokens |
-| Serving profiles | `mtp3-spark` (MTP3, 11.0 GiB KV) · `mtp3-nvfp4` (MTP3, 6.5 GiB) · `df-spark` (DFlash2@7, 12.5 GiB) · `df-nvfp4` (DFlash2@7 + video, 4.5 GiB) |
+| Serving profiles | `mtp3-spark` (MTP3, 9.5 GiB KV) · `mtp3-nvfp4` (MTP3, 6.5 GiB) · `df-spark` (DFlash2@7, 12.5 GiB) · `df-nvfp4` (DFlash2@7 + video, 4.5 GiB) |
 | Fabric | 2× DGX Spark, NVIDIA-Sync-managed ConnectX-7 RoCEv2 link (<c1-fabric-subnet> rail) |
 
 ## Files

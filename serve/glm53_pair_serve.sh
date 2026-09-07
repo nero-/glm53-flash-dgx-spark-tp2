@@ -282,6 +282,8 @@ require_unit_fraction() {
 : "${LANGUAGE_MODEL_ONLY:=1}"          # skip vision encoder cache + max-video profile buffers
 : "${MM_IMAGES:=4}"                    # per-prompt image cap when LANGUAGE_MODEL_ONLY=0
 : "${MM_VIDEOS:=1}"                    # per-prompt video cap when LANGUAGE_MODEL_ONLY=0
+: "${MM_PROCESSOR_CACHE_GB:=}"         # host RAM cache for preprocessed media (unified mem!); 0 = off, empty = vLLM default 4 GiB
+: "${MM_ENCODER_TP_MODE:=}"            # weights (default) | data (each rank holds the full encoder)
 : "${MAX_MODEL_LEN:=229376}"          # measured pair ceiling at util 0.90 is 235,008 tokens; this leaves ~11% margin
 : "${MAX_NUM_SEQS:=8}"
 : "${MAX_NUM_BATCHED_TOKENS:=4096}"   # qualified value; 8192 doubles the profiling activation peak
@@ -693,6 +695,20 @@ if [ -n "$KDA_PREFILL_BACKEND" ]; then
     *) die "KDA_PREFILL_BACKEND must be b12x, flashkda, or triton: $KDA_PREFILL_BACKEND" ;;
   esac
   extra_args+=(--kda-prefill-backend "$KDA_PREFILL_BACKEND")
+fi
+if [ -n "$MM_PROCESSOR_CACHE_GB" ]; then
+  case "$MM_PROCESSOR_CACHE_GB" in
+    0|*.*|*[0-9]) : ;;
+    *) die "MM_PROCESSOR_CACHE_GB must be a number (GiB): $MM_PROCESSOR_CACHE_GB" ;;
+  esac
+  extra_args+=(--mm-processor-cache-gb "$MM_PROCESSOR_CACHE_GB")
+fi
+if [ -n "$MM_ENCODER_TP_MODE" ]; then
+  case "$MM_ENCODER_TP_MODE" in
+    weights|data) : ;;
+    *) die "MM_ENCODER_TP_MODE must be weights or data: $MM_ENCODER_TP_MODE" ;;
+  esac
+  extra_args+=(--mm-encoder-tp-mode "$MM_ENCODER_TP_MODE")
 fi
 
 quantization_args=()

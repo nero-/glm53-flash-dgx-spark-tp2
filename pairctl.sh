@@ -113,7 +113,7 @@ case "$cmd" in
     say "stale containers down (if any)"
     rssh "$R0" "cd $SERVE_DIR && bash glm53_pair_serve.sh --down $(env_file "$RF0") 2>/dev/null || true"
     rssh "$R1" "cd $SERVE_DIR && bash glm53_pair_serve.sh --down $(env_file "$RF1") 2>/dev/null || true"
-    EXTRA="--kda-prefill-backend b12x --recurrent-checkpoint-policy request_boundaries"
+    EXTRA="--recurrent-checkpoint-policy request_boundaries"
     say "starting worker ($R1)"; rssh "$R1" "cd $SERVE_DIR && bash glm53_pair_serve.sh --run $(env_file "$RF1") $EXTRA"
     sleep 5
     say "starting head ($R0)";   rssh "$R0" "cd $SERVE_DIR && bash glm53_pair_serve.sh --run $(env_file "$RF0") $EXTRA"

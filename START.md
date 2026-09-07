@@ -11,7 +11,7 @@ Four profiles on cluster 1 (r0/r1), one image:
 
 | command (from repo dir) | model | speculator | KV pin | MM |
 |---|---|---|---|---|
-| `./pairctl.sh 1 up mtp3-spark` | spark quant | MTP3 adaptive 1/3/32 | 11.0 GiB | 4 img / 0 vid |
+| `./pairctl.sh 1 up mtp3-spark` | spark quant | MTP3 adaptive 1/3/32 | 9.5 GiB | 4 img / 0 vid |
 | `./pairctl.sh 1 up mtp3-nvfp4` | non-spark | MTP3 adaptive 1/3/32 | 6.5 GiB | 4 img / 0 vid |
 | `./pairctl.sh 1 up df-spark` | spark quant | DFlash2@7 | 12.5 GiB | 4 img / 0 vid |
 | `./pairctl.sh 1 up df-nvfp4` | non-spark | DFlash2@7 | 4.5 GiB | 4 img / 1 vid |
