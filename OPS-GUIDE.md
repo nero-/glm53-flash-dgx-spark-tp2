@@ -2,7 +2,7 @@
 
 Two DGX Sparks serving **GLM-5.3-Flash** as one TP2 model, both checkpoints —
 the NVFP4-Spark quant and the non-spark NVFP4 quant — on the
-`glm53-flash-nvfp4-devspark2` image (b12x loader + MTP3/DFlash2).
+`glm53-flash-nvfp4-head0906-managed` image (b12x loader + MTP3/DFlash2).
 `gx10-r0` is the API head (rank 0), `gx10-r1` is the headless worker (rank 1).
 Vision: 4 images per prompt (+1 video on `df-nvfp4`). Four profiles — pick one
 per boot (KV pins 11.0 / 6.5 / 12.5 / 4.5 GiB; see the table below).
@@ -42,7 +42,7 @@ Env-file profiles on cluster 1 (r0 / r1) — pick ONE matching pair per boot:
 
 | files (r0 / r1) | what it is |
 |---|---|
-| `rank-{0,1}-mtp3-spark.env` | **MTP3 spark quant — daily driver**: batch 8192, KV pinned 9.5 GiB (10200547328); 11.0 ran 120.6 GiB used on r0 — the 9.5 target keeps steady ~117-119, 512k context, 4 img / 0 vid, marlin MTP experts |
+| `rank-{0,1}-mtp3-spark.env` | **MTP3 spark quant — daily driver**: batch 8192, KV pinned 10.5 GiB (11274289152; 512k ctx, 2.80x pool), 512k context, 4 img / 0 vid, marlin MTP experts |
 | `rank-{0,1}-mtp3-nvfp4.env` | **MTP3 non-spark quant**: batch 8192, KV pinned 6.5 GiB (6979321856), 512k context, 4 img / 0 vid, humming MTP experts |
 | `rank-{0,1}-df-spark.env` | **DFlash2@7 spark**: batch 4096, KV pinned 12.5 GiB (13421772800), 256k context, 4 img / 0 vid |
 | `rank-{0,1}-df-nvfp4.env` | **DFlash2@7 non-spark**: batch 4096, KV pinned 4.5 GiB (4831838208), 256k context, 4 img / 1 vid |

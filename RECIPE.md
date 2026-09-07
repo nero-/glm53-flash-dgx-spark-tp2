@@ -1,26 +1,25 @@
 # Recipe — GLM-5.3-Flash on 2× DGX Spark (TP2)
 
-**Current line: devspark2** (`local/vllm:glm53-flash-nvfp4-devspark2`, built
-2026-09-07 on r0; qualification in progress — the previous line `devspark`
-stays loaded on both nodes as rollback until devspark2 passes). One image
-serves **both** GLM-5.3-Flash checkpoints on cluster 1; four profiles =
-2 speculators × 2 quants:
+**Current line: head0906** (image `local/vllm:glm53-flash-nvfp4-head0906-managed`,
+built 2026-09-07 on r0 — the "head-20260906" experimental cut that produced the
+35 t/s decode). One image serves **both** GLM-5.3-Flash checkpoints on both
+clusters; four profiles = 2 speculators × 2 quants:
 - `mtp3-spark` / `mtp3-nvfp4` — MTP3 adaptive (1/3/32), daily driver, ctx
-  512k, batch 8192. Spark quant: KV pin 9.5 GiB (10200547328; 1.5 GiB below the 11.0 that ran 120.6 used on r0) + marlin MTP
-  experts; non-spark quant: pin 6.5 GiB (6979321856), MXFP8 MTP experts →
-  humming (no override).
+  512k, batch 8192. Spark quant: KV pin 10.5 GiB (11274289152) + marlin MTP
+  experts (A/B: marlin helped decode vs humming on spark); non-spark quant:
+  pin 6.5 GiB (6979321856), MXFP8 MTP experts → humming (no override).
 - `df-spark` / `df-nvfp4` — DFlash2@7 (draft
   `local-inference-lab/GLM-5.3-Flash-DFlash2`, MXFP8, CC BY-NC-ND), ctx 256k,
-  batch 4096, split pages 4096/4096. Spark pin 12.5 GiB (13421772800);
+  batch 8192, split pages 2048/256. Spark pin 12.5 GiB (13421772800);
   non-spark pin 4.5 GiB (4831838208) + video on.
   Model dirs: `models/glm53-flash-nvfp4-spark` (spark quant) and
   `models/glm53-flash-nvfp4` (non-spark, 199.4 GB on disk).
 - MM numbers (keep across rebuilds): images 4 everywhere; videos 0 except
   `df-nvfp4` (1).
-- pairctl (cluster 1): `./pairctl.sh 1 up mtp3-spark` (also
-  `mtp3-nvfp4` / `df-spark` / `df-nvfp4`). Cluster 2 runs the separate
-  **devc646** line with its own `mtp3` / `dflash2` profiles (see its section
-  below) — leave cluster 2 alone during cluster-1 work.
+- pairctl: `./pairctl.sh 1 up mtp3-spark` (cluster 1, r0/r1) /
+  `PAIR_CLUSTER=2 ./pairctl.sh up mtp3-spark` (cluster 2, r2/r3); also
+  `mtp3-nvfp4` / `df-spark` / `df-nvfp4`. Cluster 2 runs the SAME image and
+  the same four profiles now (the devc646 line is retired; see below).
 
 ## Hardware / topology
 2× DGX Spark GB10 (arm64, SM 12.1, 121.7 GiB unified mem), TP2/DCP1. The
@@ -34,12 +33,21 @@ auto-fixes the env files after reboots. The second rail (<c1-fabric-subnet-2>,
 ## Image build (r0, ~15m warm / ~1h10m cold)
 ```bash
 cd ~/builds/glm53-flash-dgx-spark-tp2/builder/blackwell-llm-docker/dgx-spark-builder
-bash build-spark-cu132.sh --dry-run build-glm53-devspark2.env   # validates rewrites + pins
-bash build-spark-cu132.sh build-glm53-devspark2.env             # build (detached: setsid nohup)
-docker save local/vllm:glm53-flash-nvfp4-devspark2 | ssh -4 <c1-r1-fabric-ip> docker load
+bash build-spark-cu132.sh --dry-run build-glm53-head0906.env   # validates rewrites + pins
+bash build-spark-cu132.sh build-glm53-head0906.env             # build (detached: setsid nohup)
+# derive the -managed variant (one-line loader patch; see below), then:
+docker save local/vllm:glm53-flash-nvfp4-head0906-managed | ssh -4 <c1-r1-fabric-ip> docker load
 ```
-- Pins (devspark2, heads taken 2026-09-07): vLLM `local-inference-lab/vllm`
-  `dev/jovian-judgement` @ `2a979314` — on top of the devspark pin `858b4912`
+The `-managed` tag is a DERIVED image (no recompile): sed
+`allocation="pinned_wc"` → `allocation="managed"` in
+`b12x/integration/vllm/loader.py` (both occurrences: the real weight_pool arg
+and the audit label). Dockerfile.managed in `builder/dgx-spark-builder/`
+does it in one RUN. Without it the b12x loader costs ~36% of prefill (its
+`pinned_wc` host-resident write-combined pool is slow on unified memory);
+with it, prefill restored 1.3k → 2.0k tok/s.
+- Pins (head0906, the matched cut 2026-09-06 22:31/22:32): vLLM
+  `local-inference-lab/vllm` `dev/jovian-judgement` @ `2a979314` — on top of
+  the devspark pin `858b4912`
   (#667 gdn spec-decode fast path, #669 aligned hybrid cache reuse, #672
   Mamba-state recurrent-block resume, b12x-loader integration) it adds loader-
   owned GLM/KDA checkpoint weights (7d66922a), b12x loading for full GLM
@@ -48,23 +56,21 @@ docker save local/vllm:glm53-flash-nvfp4-devspark2 | ssh -4 <c1-r1-fabric-ip> do
   leading instruction-checkpoint retain, #683 admit exact checkpoint hits
   during active decode, and **2a979314 "Fix loader-owned allocation for the
   GLM Flash MTP projection"** (see lesson 22 — this is what unblocks
-  LOAD_FORMAT=b12x WITH MTP). b12x master @ `f46fee91` — on top of the devspark
-  pin `79e228ec` (GB10 O_DIRECT loader as a vllm plugin: reads into pinned
-  write-combined CUDA storage) it adds strided TP checkpoint slice loading
-  (eb246263, the vLLM companion), the GLM/DeepSeek loader-fix merge
-  (7e9361e4), MTP-projection allocation regression test (3eb57add), GLM-5.3
-  MoE M1 FC2 row-pair overlap, MXFP8 GEMM fill-eliding, #302 W4A8 profiling
-  oracle fix, and #246 "make TP2 graph peer-push generation-safe".
+  LOAD_FORMAT=b12x WITH MTP). b12x master @ `3eb57add` ("Test GLM Flash MTP
+  projection allocation and direct loading" — 7 commits behind master tip,
+  deliberately: the matched pair with 2a979314; the later f46fee91 line adds
+  the TP2 peer-push fix + MoE/GEMM perf but was NOT the tested cut and
+  regressed decode in our A/B vs the 35 t/s record).
   PR 646 (fine-grained prefix hits + decoupled 2048/256 split blocks) was
   closed upstream UNMERGED and is deliberately not composed here (measured
   +1.8% KV/GiB on master only; the coupled large-page default already had the
   pool efficiency). The rank envs still carry `VLLM_GLM53_SPLIT_*` /
-  `BLOCK_SIZE` 2048/256 — harmless-if-inert on this line, live with the
-  devc646 build; the boot log `physical page sizes` census is the arbiter.
+  `BLOCK_SIZE` 2048/256 — harmless-if-inert on this line; the boot log
+  `physical page sizes` census is the arbiter.
 - Loader contract at these pins (b12x docs): `VLLM_PLUGINS=b12x_loader` +
   `--load-format b12x`; write-combined pinned storage is unconditional (no
   `allocation` loader option is accepted — vLLM 1259c74d).
-- Toolchain unchanged from the r22b qualification (devspark → devspark2 diff
+- Toolchain unchanged from the r22b qualification (devspark → head0906 diff
   is ONLY the two source pins): patched NCCL `dfab7c1a`
   (canonical/cu132-nccl2304), FlashInfer `1ac6942`, InstantTensor `49b4010`
   (dormant when booting the b12x loader; still the fallback path), torch
@@ -74,8 +80,8 @@ docker save local/vllm:glm53-flash-nvfp4-devspark2 | ssh -4 <c1-r1-fabric-ip> do
   clones for vLLM (main + launcher) — GitHub 408s on `--filter=blob:none`
   lazy blob fetches killed several builds.
 - Re-pin: `git ls-remote` the two repos, update `VLLM_PIN`/`B12X_PIN` in a new
-  profile, rebuild. Profiles on r0: build-glm53-devspark.env (previous line),
-  build-glm53-devspark2.env (current).
+  profile, rebuild. Profiles on r0: build-glm53-head0906.env (current),
+  build-glm53-devspark.env + build-glm53-devspark2.env (previous lines).
 
 ## Serve (from any machine with the SSH aliases; repo `glm53-flash-dgx-spark-tp2/`)
 ```bash
@@ -99,11 +105,11 @@ serve dir.
 ## Key config (cluster 1, all profiles)
 `LOAD_FORMAT=b12x` + `VLLM_PLUGINS=b12x_loader` (the b12x GB10 O_DIRECT
 loader; the devspark era had to run `LOAD_FORMAT=instanttensor` because of
-lesson 22 — reverted to b12x at devspark2) · mtp3 adaptive (1/3/32) or
+lesson 22 — reverted to b12x at head0906) · mtp3 adaptive (1/3/32) or
 dflash@7 · MTP experts: non-spark quant **MXFP8 → humming** (no
 `MTP_MOE_BACKEND` override); spark quant **NVFP4 → `MTP_MOE_BACKEND=marlin`** ·
 fp8 KV · B12X attention/MoE/linear · `KDA_PREFILL_BACKEND=flashkda` (the
-`vllm/_flashkda_C.abi3.so` extension IS in the devspark2 image — RECIPE's old
+`vllm/_flashkda_C.abi3.so` extension IS in the head0906 image — RECIPE's old
 "flashkda not present in the public builder" note is stale; `b12x` KDA prefill
 fell back to a heuristic policy at this pin) · `--recurrent-checkpoint-policy
 request_boundaries` · `--mamba-cache-mode align` · piecewise graphs · prefix
@@ -251,7 +257,7 @@ Bench caveats (learned the hard way):
      therefore ran `LOAD_FORMAT=instanttensor` (what the live envs showed)
      while this doc's Key config still said b12x — docs were aspirational,
      envs honest. Fixed upstream by vLLM `2a979314` + b12x `3eb57add`
-     (regression test) / `eb246263` (strided TP slices); **devspark2 boots
+     (regression test) / `eb246263` (strided TP slices); **head0906 boots
      the b12x loader with MTP for real** (`VLLM_PLUGINS=b12x_loader`).
      Rule: the live host env files are ground truth over this file's
      config claims; if they disagree, check the pins before believing
@@ -334,7 +340,7 @@ PAIR_CLUSTER=2 bash pairctl.sh --verify   # then: glm53_pair_serve.sh --verify r
   profiles mtp3-spark/df-spark/mtp3-nvfp4/df-nvfp4 on cluster 1).
 - `serve/glm53_pair_serve.sh` — the host launcher (deploy to both nodes).
 - `builder/dgx-spark-builder/` — the arm64/SM121 image-builder wrapper + build
-  profiles (`build-glm53-devspark2.env` current, `build-glm53-devspark.env`
+  profiles (`build-glm53-head0906.env` current, `build-glm53-devspark.env`
   previous line; `build-example.env` is the documented template).
 - `env/rank-{0,1}-{mtp3,df}-{spark,nvfp4}.env` — the four cluster-1 profile
   templates (live host files are ground truth).

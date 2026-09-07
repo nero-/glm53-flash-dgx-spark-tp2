@@ -1,8 +1,8 @@
 # Start here
 
 GLM-5.3-Flash on 2× DGX Spark pairs (TP2), serving **both** checkpoints —
-the NVFP4-**Spark** quant and the non-spark NVFP4 quant — on the devspark2
-build: vLLM `dev/jovian-judgement` `2a979314` + b12x `f46fee91`, the b12x
+the NVFP4-**Spark** quant and the non-spark NVFP4 quant — on the head0906
+build: vLLM `dev/jovian-judgement` `2a979314` + b12x `3eb57add`, the b12x
 O_DIRECT checkpoint loader running **with** MTP (upstream `eh_proj`
 loader-allocation fix — the devspark era had to fall back to instanttensor).
 PR 646 not composed (closed upstream unmerged; see RECIPE lessons 21/22).
