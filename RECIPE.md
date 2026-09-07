@@ -105,25 +105,39 @@ dflash@7 · MTP experts: non-spark quant **MXFP8 → humming** (no
 fp8 KV · B12X attention/MoE/linear · `KDA_PREFILL_BACKEND=flashkda` (the
 `vllm/_flashkda_C.abi3.so` extension IS in the devspark2 image — RECIPE's old
 "flashkda not present in the public builder" note is stale; `b12x` KDA prefill
-fell back to a heuristic policy at this pin) · `VLLM_GDN_DECODE_KERNEL=b12x`
-(engine default is `cuda`!) · `--recurrent-checkpoint-policy
+fell back to a heuristic policy at this pin) · `--recurrent-checkpoint-policy
 request_boundaries` · `--mamba-cache-mode align` · piecewise graphs · prefix
 caching + chunked prefill ON · `VLLM_ENABLE_PCIE_ALLREDUCE=0` · LD_PRELOAD =
 CUDA 13.2 compat shim + patched NCCL 2.30.4 ·
 `VLLM_B12X_MOE_FP4_FORCE_A16=0`.
 
 Reference-env settings adopted 2026-09-07 (from Luke's
-testing_glm53rankenv.txt, non-KV parts): `BLOCK_SIZE=256` + split pages
-2048/256 + `PREFIX_MATCH_UNIT=256` (El8 geometry — block-table unit 256,
-no slot inflation), `KDA_PREFILL_BACKEND=flashkda`,
-`VLLM_GDN_DECODE_KERNEL=b12x`, `MM_PROCESSOR_CACHE_GB=0` (vLLM default 4 GiB
-per process of HOST unified memory otherwise), `MM_ENCODER_TP_MODE=data`
-(each rank runs the full encoder, no encoder collectives over RoCE), and
-**MTP5** on the mtp profiles (`NUM_SPECULATIVE_TOKENS=5`; reference note: 3
-was the old qualified depth, 5 was a wash pre-#667 — under test again with
-the fixed loader). KV pins and MM caps keep the project's own numbers.
-Boot log at the 9.5 GiB pin: `physical page sizes [1148928, 2293760]`,
-`GPU KV cache size: 1,274,502 tokens` (2.43× a 512k request).
+testing_glm53rankenv.txt + glm53-jovian.env, A/B'd): `KDA_PREFILL_BACKEND=flashkda` (prefill 1.65–2.03k tok/s vs 1.3k with the b12x KDA heuristic),
+`MM_PROCESSOR_CACHE_GB=0` (vLLM default 4 GiB per process of HOST unified
+memory otherwise; frees ~8 GiB/node), `MM_ENCODER_TP_MODE=data` (each rank runs
+the full encoder, no encoder collectives over RoCE), `PREFIX_MATCH_UNIT=256`,
+`PREFILL_SCHEDULE_INTERVAL=1` (their C=1 profile), `ASYNC_SCHEDULING=1`
+(CLI flag, store_true — `--async-scheduling` alone; passing a value errors),
+`B12X_POLICY_MODE=auto` (b12x env var — no CLI flag), `COMPILATION_LEVEL=2`
+(torch.compile `-O2`), and `MTP_MOE_BACKEND=humming` on the Spark quant too
+(their accept ~2.5 vs marlin's ~2.3; the r21-era marlin note on spark is
+superseded — lesson 6). **Reverted**: `BLOCK_SIZE=256` → 2048 (El8's
+block-table unit 256 measured smaller pool: 1,326,879 vs 1,466,929 tokens
+at the same pin), `VLLM_GDN_DECODE_KERNEL` (unset — engine default `cuda`),
+MTP5 → **MTP3** (acceptance 0.853/0.581/0/0/0 — depth 2–3 real; MTP5 a
+wash + 2 GiB graph memory), **AOT** (not in image — no mega artifact),
+`--chat-template` high-reasoning (NOT copied — it changes model behavior;
+stock template defaults reasoning_effort to `max`).
+KV pins and MM caps keep the project's own numbers; mtp3-spark now 10.5 GiB
+(11274289152 — managed loader boots at 118 GiB used, +1 GiB affordable).
+Boot log: `physical page sizes [1148928, 2244608]`,
+`GPU KV cache size: 1,466,929 tokens` (2.80× a 512k request).
+Loader: the `-managed` derivative image (one-line sed in
+b12x/integration/vllm/loader.py `pinned_wc` → `managed`; see
+builder/dgx-spark-builder/ Dockerfile.managed note) — without it b12x
+loading costs ~36% of prefill.
+Template sync 2026-09-07: Spark snapshot carried an older chat_template.jinja
+than current HF main (16ffa9ab); synced from the NVFP4 copy on both nodes.
 
 Memory envelope (cluster 1, non-spark quant): worker ≈ 117 GiB used at a
 6.5 GiB KV pin; **the head runs ~2.5 GiB heavier** (API + engine + MM

@@ -262,6 +262,7 @@ require_unit_fraction() {
 : "${PREFILL_SCHEDULE_INTERVAL:=8}"    # admit new prefill every N engine steps; inert before #546 (r8), then stops decode starvation
 : "${PREFIX_MATCH_UNIT:=}"  # PR #646 geometry: 256 alongside 2048/256 split pages (r25+ images)
 : "${KDA_PREFILL_BACKEND:=}" # r25+ images: b12x | flashkda | triton; empty = engine default
+: "${ASYNC_SCHEDULING:=}"    # 1 = admit prefill + decode outside the scheduler loop (upstream C=1 profile)
 : "${BLOCK_SIZE:=256}"            # public attention block; 2048 with the PR #646 split geometry
 : "${COMPILATION_LEVEL:=}"             # empty = no -O flag; 0-3 passes -O<N> (torch.compile level) -- A/B only
 : "${GENERATION_CONFIG:=auto}"         # auto = model's generation_config.json; vllm = engine defaults
@@ -347,8 +348,8 @@ for name in \
 done
 
 case "$NODE_RANK" in
-  0|1) ;;
-  *) die "NODE_RANK must be 0 or 1: $NODE_RANK" ;;
+  0|1|2|3) ;;
+  *) die "NODE_RANK must be 0|1|2|3 (in-cluster role; cluster 1 uses 0/1, cluster 2 uses 2/3): $NODE_RANK" ;;
 esac
 
 require_directory MODEL_HOST_PATH
@@ -688,6 +689,13 @@ chat_template_container_path=/models/chat_template.jinja
 if [ -n "$PREFIX_MATCH_UNIT" ]; then
   require_positive_integer PREFIX_MATCH_UNIT
   extra_args+=(--prefix-match-unit "$PREFIX_MATCH_UNIT")
+fi
+if [ -n "$ASYNC_SCHEDULING" ]; then
+  case "$ASYNC_SCHEDULING" in
+    1) extra_args+=(--async-scheduling) ;;        # BooleanOptionalAction flag: no value arg
+    0) extra_args+=(--no-async-scheduling) ;;
+    *) die "ASYNC_SCHEDULING must be 0 or 1: $ASYNC_SCHEDULING" ;;
+  esac
 fi
 if [ -n "$KDA_PREFILL_BACKEND" ]; then
   case "$KDA_PREFILL_BACKEND" in
