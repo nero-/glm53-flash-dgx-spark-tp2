@@ -33,3 +33,16 @@ devc646 KV density: 139.8k tokens/GiB (mtp3) / 65.4k (dflash2: 5 DFlash draft KV
 layers kept in 1 independent native-block group). Fine-grained prefix hits on both
 profiles (the r22-era `Disabling fine-grained…` lines are gone); 52k replay TTFT
 115 s → 1.38 s on dflash2.
+
+Series D — the CURRENT line (head0906 + `-managed` loader, 2026-09-07): ONE
+image on both clusters, the same four profiles (mtp3/df × spark/nvfp4), batch
+8192 everywhere, `PREFILL_SCHEDULE_INTERVAL=8`, flashkda KDA prefill, marlin
+MTP experts on the spark quant / humming on the non-spark one. Its A/Bs
+(reference-env adoption, ASYNC_SCHEDULING drop, the marlin pick, the
+`-managed` loader patch) ran as quick matrix passes recorded in `bench/` raw
+json/txt artifacts (gitignored by convention — raw stays local), not as
+run-N.md reports; RECIPE.md's "Key config" + "Reference-env A/B ledger"
+sections carry the decisions. Reference points: KV pool **1,466,929 tokens**
+at the 10.5 GiB mtp3-spark pin (2.80× a 512k request), prefill back at
+~1.65–2.03k tok/s (the `-managed` patch restored what the b12x pinned_wc
+loader cost), page census `physical page sizes [1148928, 2244608]`.

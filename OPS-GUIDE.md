@@ -5,10 +5,10 @@ the NVFP4-Spark quant and the non-spark NVFP4 quant — on the
 `glm53-flash-nvfp4-head0906-managed` image (b12x loader + MTP3/DFlash2).
 `gx10-r0` is the API head (rank 0), `gx10-r1` is the headless worker (rank 1).
 Vision: 4 images per prompt (+1 video on `df-nvfp4`). Four profiles — pick one
-per boot (KV pins 11.0 / 6.5 / 12.5 / 4.5 GiB; see the table below).
+per boot (KV pins 10.5 / 6.5 / 12.5 / 4.5 GiB; see the table below).
 A SECOND cluster exists: `gx10-r2` (head) + `gx10-r3` (worker) running the
-parked `devc646` image with its own two profiles (mtp3 / dflash2, both with
-video) — see "Second cluster" below; leave it alone during cluster-1 work.
+**same `head0906-managed` image** and the same four profiles — see "Second
+cluster" below; don't cycle it from a cluster-1 session.
 
 ## Hosts and access
 
@@ -38,14 +38,16 @@ ssh -4 gx10-r1
   builder/         image builder (r0 only)
   GUIDE.md         this guide (on both nodes)
 ```
+(same tree on r2/r3 for cluster 2: `rank-2*.env` on r2, `rank-3*.env` on r3,
+same launcher, no builder)
 Env-file profiles on cluster 1 (r0 / r1) — pick ONE matching pair per boot:
 
 | files (r0 / r1) | what it is |
 |---|---|
 | `rank-{0,1}-mtp3-spark.env` | **MTP3 spark quant — daily driver**: batch 8192, KV pinned 10.5 GiB (11274289152; 512k ctx, 2.80x pool), 512k context, 4 img / 0 vid, marlin MTP experts |
 | `rank-{0,1}-mtp3-nvfp4.env` | **MTP3 non-spark quant**: batch 8192, KV pinned 6.5 GiB (6979321856), 512k context, 4 img / 0 vid, humming MTP experts |
-| `rank-{0,1}-df-spark.env` | **DFlash2@7 spark**: batch 4096, KV pinned 12.5 GiB (13421772800), 256k context, 4 img / 0 vid |
-| `rank-{0,1}-df-nvfp4.env` | **DFlash2@7 non-spark**: batch 4096, KV pinned 4.5 GiB (4831838208), 256k context, 4 img / 1 vid |
+| `rank-{0,1}-df-spark.env` | **DFlash2@7 spark**: batch 8192, KV pinned 12.5 GiB (13421772800), 256k context, 4 img / 0 vid |
+| `rank-{0,1}-df-nvfp4.env` | **DFlash2@7 non-spark**: batch 8192, KV pinned 4.5 GiB (4831838208), 256k context, 4 img / 1 vid |
 
 (DFlash2 draft is CC BY-NC-ND — non-commercial; MTP3 is the commercial path.)
 
@@ -67,30 +69,33 @@ first arg = cluster, default 1; default profile `mtp3-spark`):
 index (auto-fixes the env files after a reboot), drops page cache, tears down
 stale containers, starts **worker first, then head**, and waits for the API to
 come healthy. It asks once for the pair's sudo password and caches it in
-`<sudo-password-file>` (never in git).
+`~/.pair-sudo` (never in git).
 
-## Second cluster (gx10-r2 / gx10-r3) — `devc646` (parked line)
-Everything above applies to cluster 1. The second pair runs the
-`local/vllm:glm53-flash-nvfp4-devc646` image (r25-line + PR #646; see
-RECIPE.md "Second cluster + the devc646 line") and is controlled by the SAME
-pairctl with an env flag:
+## Second cluster (gx10-r2 / gx10-r3) — same image, same four profiles
+Everything above applies to cluster 1. The second pair runs the SAME
+`local/vllm:glm53-flash-nvfp4-head0906-managed` image and the same four
+profile names, through the same pairctl — positional cluster arg (or the
+`PAIR_CLUSTER=2` env form):
 
 ```bash
-PAIR_CLUSTER=2 ./pairctl.sh up mtp3        # MTP3, video on, 8 GiB pin ≈ 1.12M tokens
-PAIR_CLUSTER=2 ./pairctl.sh up dflash2     # DFlash2@7, video on, 8 GiB pin ≈ 523k tokens
-PAIR_CLUSTER=2 ./pairctl.sh down mtp3      # stop (profile name is required on c2)
-PAIR_CLUSTER=2 ./pairctl.sh status mtp3
-PAIR_CLUSTER=2 PAIR_HEALTH_TIMEOUT=1900 ./pairctl.sh up mtp3   # cold JIT boot
+./pairctl.sh 2 up mtp3-spark    # also mtp3-nvfp4 / df-spark / df-nvfp4 (same pins as cluster 1)
+./pairctl.sh 2 down             # stop both ranks (status / check / logs 0|1 the same way)
+PAIR_CLUSTER=2 PAIR_HEALTH_TIMEOUT=1900 ./pairctl.sh up df-nvfp4   # cold JIT boot
 ```
 - API on r2 (LAN <r2-lan-ip>:8000), model name `zai-org/GLM-5.3-Flash`.
-- `KV_CACHE_MEMORY_BYTES` MUST be set on both ranks of BOTH profiles — the
-  devc646 engine refuses unpinned 512k/262k profiles; while a pin is set the
-  engine skips memory profiling and `gpu_memory_utilization` is ignored.
-- r2/r3 are the BUILD node (r2) and the bench/expire target; do not cycle
-  `glm53-flash-r0/-r1` (cluster 1) from automation — the agent runtime runs
-  inside those two containers. After a reboot: swappiness, GID check,
-  `drop_caches` — same drill as cluster 1; pairctl auto-fixes the GID index
-  for the r2/r3 env files when PAIR_CLUSTER=2.
+- `KV_CACHE_MEMORY_BYTES` MUST be set on every profile (it already is in all
+  templates) — the engine refuses unpinned 512k/262k profiles; while a pin is
+  set the engine skips memory profiling and `gpu_memory_utilization` is ignored.
+- Do not cycle cluster-2 serving containers from a cluster-1 session. (The
+  old "the agent runtime lives inside them" reason is obsolete — agent
+  sessions run on the operator's machine since 2026-09-07 — but cluster-2
+  lifecycle is still not cluster-1 business. The pre-2026-09-07 devc646
+  parking line is retired and its image is DELETED; the legacy
+  `rank-{2,3}-{mtp3,dflash2}.env` templates no longer boot — history in
+  RECIPE.md.)
+- After a reboot: swappiness, GID check, `drop_caches` — same drill as
+  cluster 1; pairctl auto-fixes the GID index for the r2/r3 env files when
+  the cluster arg is 2.
 
 ## Manual start (what `pairctl.sh up` does, step by step)
 
@@ -116,11 +121,12 @@ ssh -4 gx10-r1 show_gids        # find IPv4 <r1-fabric-ip> -> its INDEX (current
 ssh -4 gx10-r0 'echo REDACTED-SUDO-PASSWORD | sudo -S sh -c "sync; echo 3 > /proc/sys/vm/drop_caches"'
 ssh -4 gx10-r1 'echo REDACTED-SUDO-PASSWORD | sudo -S sh -c "sync; echo 3 > /proc/sys/vm/drop_caches"'
 
-# 4. Start WORKER first, then HEAD (about 3-5 min to load); here: mtp3-spark,
-# pairctl passes the EXTRA flags (--kda-prefill-backend b12x
-# --recurrent-checkpoint-policy request_boundaries) on every boot:
-ssh -4 gx10-r1 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --run rank-1-mtp3-spark.env --kda-prefill-backend b12x --recurrent-checkpoint-policy request_boundaries'
-ssh -4 gx10-r0 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --run rank-0-mtp3-spark.env --kda-prefill-backend b12x --recurrent-checkpoint-policy request_boundaries'
+# 4. Start WORKER first, then HEAD (about 3-5 min to load); here: mtp3-spark.
+# The launcher wires the env-file settings itself (KDA prefill = flashkda,
+# geometry 2048/256, KV pin, ...); pairctl adds the ONLY extra flag,
+# --recurrent-checkpoint-policy request_boundaries:
+ssh -4 gx10-r1 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --run rank-1-mtp3-spark.env --recurrent-checkpoint-policy request_boundaries'
+ssh -4 gx10-r0 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --run rank-0-mtp3-spark.env --recurrent-checkpoint-policy request_boundaries'
 
 # 5. Verify it is healthy (expect "GPU KV cache size", "Application startup complete", health OK):
 ssh -4 gx10-r0 'cd ~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement && bash glm53_pair_serve.sh --verify rank-0-mtp3-spark.env'

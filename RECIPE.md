@@ -88,14 +88,19 @@ with it, prefill restored 1.3k → 2.0k tok/s.
 ./pairctl.sh 1 up mtp3-spark   # cluster 1 (r0/r1); also: mtp3-nvfp4 / df-spark / df-nvfp4
 ./pairctl.sh 1 down            # status / check / logs 0|1 [profile] the same way
 ```
-(pairctl's positional first arg picks the cluster; cluster 2 = `2 up mtp3` /
-`2 up dflash2` on the devc646 line — leave it alone during cluster-1 work.
-First-ever boot on a NEW image: `PAIR_HEALTH_TIMEOUT=1900 ./pairctl.sh 1 up …`
-— cold JIT can exceed the default 720 s wait.)
+(pairctl's positional first arg picks the cluster; cluster 2 takes the SAME
+four profile names — `./pairctl.sh 2 up mtp3-spark` etc. — same image, same
+pins. Don't cycle cluster 2 from a cluster-1 session. First-ever boot on a
+NEW image: `PAIR_HEALTH_TIMEOUT=1900 ./pairctl.sh 1 up …` — cold JIT can
+exceed the default 720 s wait. Off-LAN: `PAIR_TS=1 ./pairctl.sh …` routes
+ssh through the Tailscale aliases; `PAIR_SUDO_PASSWORD` or the cached
+`~/.pair-sudo` feed the sudo calls.)
 pairctl handles swappiness, GID auto-fix, drop_caches, teardown, worker-first
-start order, health wait, and passes `--kda-prefill-backend b12x
---recurrent-checkpoint-policy request_boundaries` as launcher passthrough
-EXTRA on every boot. Env files live on hosts in
+start order, and the health wait. Its launcher passthrough EXTRA is ONLY
+`--recurrent-checkpoint-policy request_boundaries` now — the KDA backend is
+no longer hardcoded here (`pairctl` on the head0906 line); the env files'
+`KDA_PREFILL_BACKEND=flashkda` is wired into `--kda-prefill-backend` by the
+launcher. Env files live on hosts in
 `~/builds/glm53-flash-dgx-spark-tp2/serve/TP2-DGX-Spark-GLM5.3F-Jovian-Judgement/`
 (repo copies in `env/` are IP-scrubbed templates; hosts hold real IPs — the
 **live host files are ground truth**). The host launcher that pairctl drives,
@@ -106,8 +111,9 @@ serve dir.
 `LOAD_FORMAT=b12x` + `VLLM_PLUGINS=b12x_loader` (the b12x GB10 O_DIRECT
 loader; the devspark era had to run `LOAD_FORMAT=instanttensor` because of
 lesson 22 — reverted to b12x at head0906) · mtp3 adaptive (1/3/32) or
-dflash@7 · MTP experts: non-spark quant **MXFP8 → humming** (no
-`MTP_MOE_BACKEND` override); spark quant **NVFP4 → `MTP_MOE_BACKEND=marlin`** ·
+dflash@7 · MTP experts: non-spark quant **MXFP8 → humming** (engine default;
+envs pin `MTP_MOE_BACKEND=humming` explicitly); spark quant **NVFP4 →
+`MTP_MOE_BACKEND=marlin`** ·
 fp8 KV · B12X attention/MoE/linear · `KDA_PREFILL_BACKEND=flashkda` (the
 `vllm/_flashkda_C.abi3.so` extension IS in the head0906 image — RECIPE's old
 "flashkda not present in the public builder" note is stale; `b12x` KDA prefill
@@ -115,25 +121,37 @@ fell back to a heuristic policy at this pin) · `--recurrent-checkpoint-policy
 request_boundaries` · `--mamba-cache-mode align` · piecewise graphs · prefix
 caching + chunked prefill ON · `VLLM_ENABLE_PCIE_ALLREDUCE=0` · LD_PRELOAD =
 CUDA 13.2 compat shim + patched NCCL 2.30.4 ·
-`VLLM_B12X_MOE_FP4_FORCE_A16=0`.
+`VLLM_B12X_MOE_FP4_FORCE_A16=0` · `PREFILL_SCHEDULE_INTERVAL=8`
+(the matched-cut value, uniform on all four profiles; stops decode starvation
+under mixed load) · `MAX_NUM_BATCHED_TOKENS=8192` + `MAX_NUM_SEQS=8`
+(batch 8192 everywhere — mtp3 AND df since head0906) · `COMPILATION_LEVEL=2`
+(launcher passes `-O2`, but the engine resolves `CompilationMode.NONE` on
+this line — inert; kept in the envs; the live graph machinery is the piecewise
+cudagraphs FULL_AND_PIECEWISE capture ≤96 — verified against the live boot log).
 
-Reference-env settings adopted 2026-09-07 (from Luke's
-testing_glm53rankenv.txt + glm53-jovian.env, A/B'd): `KDA_PREFILL_BACKEND=flashkda` (prefill 1.65–2.03k tok/s vs 1.3k with the b12x KDA heuristic),
-`MM_PROCESSOR_CACHE_GB=0` (vLLM default 4 GiB per process of HOST unified
-memory otherwise; frees ~8 GiB/node), `MM_ENCODER_TP_MODE=data` (each rank runs
-the full encoder, no encoder collectives over RoCE), `PREFIX_MATCH_UNIT=256`,
-`PREFILL_SCHEDULE_INTERVAL=1` (their C=1 profile), `ASYNC_SCHEDULING=1`
-(CLI flag, store_true — `--async-scheduling` alone; passing a value errors),
-`B12X_POLICY_MODE=auto` (b12x env var — no CLI flag), `COMPILATION_LEVEL=2`
-(torch.compile `-O2`), and `MTP_MOE_BACKEND=humming` on the Spark quant too
-(their accept ~2.5 vs marlin's ~2.3; the r21-era marlin note on spark is
-superseded — lesson 6). **Reverted**: `BLOCK_SIZE=256` → 2048 (El8's
-block-table unit 256 measured smaller pool: 1,326,879 vs 1,466,929 tokens
-at the same pin), `VLLM_GDN_DECODE_KERNEL` (unset — engine default `cuda`),
-MTP5 → **MTP3** (acceptance 0.853/0.581/0/0/0 — depth 2–3 real; MTP5 a
-wash + 2 GiB graph memory), **AOT** (not in image — no mega artifact),
-`--chat-template` high-reasoning (NOT copied — it changes model behavior;
-stock template defaults reasoning_effort to `max`).
+Reference-env A/B ledger (from Luke's testing_glm53rankenv.txt +
+glm53-jovian.env, A/B'd 2026-09-06/07 to the FINAL head0906 state). ADOPTED:
+`KDA_PREFILL_BACKEND=flashkda` (prefill 1.65–2.03k tok/s vs ~1.3k with the b12x
+KDA heuristic fallback), `MM_PROCESSOR_CACHE_GB=0` (vLLM default 4 GiB per
+process of HOST unified memory otherwise; frees ~8 GiB/node),
+`MM_ENCODER_TP_MODE=data` (each rank runs the full encoder, no encoder
+collectives over RoCE), `PREFIX_MATCH_UNIT=256`, `COMPILATION_LEVEL=2`
+(kept in the envs; inert here — see above),
+`B12X_POLICY_MODE=auto` (b12x env var — no CLI flag), block geometry 2048 +
+split 2048/256 (reverted El8's plain `BLOCK_SIZE=256`: its block-table unit
+measured a smaller pool — 1,326,879 vs 1,466,929 tokens at the same pin),
+MTP3 adaptive 1/3/32 (MTP5 a wash + 2 GiB graph memory; acceptance
+0.853/0.581/0/0/0 — depth 2–3 real), and `MTP_MOE_BACKEND=marlin` on the SPARK
+quant only — our A/B found marlin HELPS decode on the spark quant; the
+non-spark MXFP8 experts stay humming (explicit `MTP_MOE_BACKEND=humming`).
+NOT adopted: `ASYNC_SCHEDULING` (dropped in the final pass
+— measured C8-short dip, no upside), `PREFILL_SCHEDULE_INTERVAL=1` (the
+reference's C=1 value — ours is 8, the matched cut), the high-reasoning
+`--chat-template` override (NOT copied — it changes model behavior; stock
+template defaults reasoning_effort to `max`), and **AOT** (not in image —
+no mega artifact). DIVERGED-but-deliberate: the reference left
+`VLLM_GDN_DECODE_KERNEL` unset (engine default `cuda`); OURS pins `b12x` in
+every env — part of the enacted head-0906 block.
 KV pins and MM caps keep the project's own numbers; mtp3-spark now 10.5 GiB
 (11274289152 — managed loader boots at 118 GiB used, +1 GiB affordable).
 Boot log: `physical page sizes [1148928, 2244608]`,
@@ -150,7 +168,7 @@ Memory envelope (cluster 1, non-spark quant): worker ≈ 117 GiB used at a
 encoder reservation) ≈ 119 GiB. The OOM cliff is ~121.5 GiB — a 9 GiB pin
 OOM'd the head on the NON-spark weights. Current pins: mtp3-nvfp4 6.5 /
 df-nvfp4 4.5 (draft weights + draft KV groups + video reservation);
-the spark quant leaves more room, so mtp3-spark 11.0 / df-spark 12.5.
+the spark quant leaves more room, so mtp3-spark 10.5 / df-spark 12.5.
 Move up only in small steps and watch `free -g` on r0. The real KV pool is the
 boot log line `GPU KV cache size: N tokens`.
 
@@ -183,7 +201,8 @@ Bench caveats (learned the hard way):
 - **The bench's "KV cache budget" over-reports capacity**: it shows
   `num_gpu_blocks × block_size` (242 × 4608 ≈ 1.1M) which includes
   mamba-alignment padding. The real usable KV is the boot log / metrics
-  `GPU KV cache size` (e.g. **1,235,254** at the 9 GiB pin). Don't chase
+  `GPU KV cache size` (e.g. **1,466,929** at the current
+  10.5 GiB mtp3-spark pin). Don't chase
   "1.1M KV" — it's a display artifact, not a real gain.
 
 ## Lessons learned (condensed, current)
@@ -191,7 +210,7 @@ Bench caveats (learned the hard way):
    auto-fixes on every `up`.
 2. **Memory: the head node binds** (~2.5 GiB heavier than the worker). The
    9 GiB KV pin OOM'd the head on the non-spark quant; current pins: mtp3-nvfp4
-   6.5 / df-nvfp4 4.5 / mtp3-spark 11.0 / df-spark 12.5 GiB. A
+   6.5 / df-nvfp4 4.5 / mtp3-spark 10.5 / df-spark 12.5 GiB. A
    wedged host after an OOM needs a physical power-cycle.
 3. **After cable swaps / switch experiments: reboot both nodes if fabric
    throughput looks capped** (a warm reboot cleared a stuck CX7 state that
@@ -204,8 +223,9 @@ Bench caveats (learned the hard way):
    commercial path.
 6. **Locklock lineage**: fixed by b12x `9ae41c5c` ("wait for persistent
    epilogue stores"); every later b12x pin includes it. If loops return,
-   suspect a stale b12x pin first. (The r21-era marlin-MTP workaround is
-   obsolete — MTP experts are MXFP8 → humming on this line.)
+   suspect a stale b12x pin first. (MTP experts: the MXFP8 ones → humming by
+   engine default; the NVFP4-expert spark quant runs `MTP_MOE_BACKEND=marlin`
+   — the head0906 A/B found marlin helped decode there.)
 7. **Adaptive MTP > fixed MTP** at long context — keep adaptive (window 32).
 8. **First request after boot is JIT-slow** — not a hang.
 9. **The bench's "KV cache budget" over-reports** (`num_gpu_blocks ×
@@ -224,11 +244,15 @@ Bench caveats (learned the hard way):
     stable with vision on the devc646 line (r2 steady 119/2 GiB, r3 114/7;
     survived the full 20-cell matrix at 120 used / 1 avail). Never exceed
     the r22 9-GiB-with-vision cliff.
-19. **`resolve_kda_prefill_backend` never auto-selects b12x** — on the
-    r25/devc646 line pass `--kda-prefill-backend b12x` explicitly. R25's
-    default (flashkda) is not present in the public Spark builder (its
-    extension is a private R-artifact); b12x is built by the wrapper and
-    works (mtp3 + dflash2 boots verified, no `locklock`).
+19. **`resolve_kda_prefill_backend` never auto-selects** — set the env var
+    `KDA_PREFILL_BACKEND=flashkda` (the launcher wires
+    `--kda-prefill-backend` from it). At head0906 flashkda IS in the image
+    (`vllm/_flashkda_C.abi3.so` — the old "not in the public builder" note
+    is stale) and measured 1.65–2.03k tok/s prefill vs ~1.3k on b12x, whose
+    prefill falls back to a heuristic policy at this pin. (History: on the
+    pre-head0906 r25/devc646 line flashkda was NOT in the public builder, so
+    `--kda-prefill-backend b12x` was the explicit override, hardcoded by
+    pairctl — pairctl no longer does that.)
 20. **r2 (and likely any node) container builds flake on github.com**
     (135 s connect timeouts twice today). Mitigation on r2: bare mirrors of
     b12x/lmcache under `~/builds/.git-mirrors/` served by
@@ -263,13 +287,25 @@ Bench caveats (learned the hard way):
      config claims; if they disagree, check the pins before believing
      either.
 
-## Second cluster + the `devc646` line (2026-09-05)
-The second pair — **gx10-r2** (head/rank0, LAN <r2-lan-ip>, fabric <c2-r0-fabric-ip>) and
-**gx10-r3** (worker/rank1, fabric <c2-r1-fabric-ip>) — serves the
-`glm53-flash-nvfp4-devc646` image. It is used as the redeploy target for the newest
-software so cluster 1 (r0/r1, r22b master) can keep daily driving without
-software churn. Build on **r2 only**; state on r0/r1 stays read-only (the agent's
-own runtime rides inside those containers — never cycle them from tooling).
+## Second cluster + the `devc646` line (2026-09-05 — RETIRED 2026-09-07)
+The second pair — **gx10-r2** (head/rank0, LAN <r2-lan-ip>,
+fabric <c2-r0-fabric-ip>) and **gx10-r3** (worker/rank1,
+fabric <c2-r1-fabric-ip>) — NOW runs the SAME head0906 image
+(`local/vllm:glm53-flash-nvfp4-head0906-managed`) and the same four profiles
+as cluster 1, via `./pairctl.sh 2 up mtp3-spark|mtp3-nvfp4|df-spark|df-nvfp4`
+(rank-2-/rank-3- env files, repo templates synced from the live r2/r3 files;
+head0906-managed is the only GLM image on r2/r3 — the devc646 image was
+deleted there in
+the superseded-image cleanup). The devc646-line text below is the historical
+build/geometry record. (The "agent runtime rides inside those containers"
+note is also obsolete: since 2026-09-07 agent sessions run on the operator's
+machine — but cluster-2 containers are still not cluster-1-session business.)
+
+## The `devc646` line — historical record (2026-09-05)
+When cluster 2 carried the newest software while cluster 1 kept daily driving:
+target for redeploy, cluster 1 (r0/r1, r22b-era master) served the day job,
+and the build ran on **r2 only** (r0/r1 read-only — at the time the agent ran
+inside the r0/r1 serving containers).
 
 - **Line**: vLLM = `dev/jovian-judgement` @ `a8c796f3` (morning perf work: #649
   one-exchange top-k, GLM5Next LM-head/metadata reuse, B12X sparse-MLA cache fix,
@@ -318,33 +354,40 @@ The sync redo completed: the fabric is now sync-managed on both nodes
 operator action needed on fabric unless recabling again.
 
 
-## Second cluster — the devc646 quick start
+## Second cluster — quick start (current)
 ```bash
-# build (r2 only; needs the git mirrors + http.server 4443 running there)
-cd ~/builds/glm53-flash-dgx-spark-tp2/builder/blackwell-llm-docker/dgx-spark-builder
-bash build-spark-cu132.sh build-glm53-devc646.env
-docker save local/vllm:glm53-flash-nvfp4-devc646 | ssh -4 gx10-r3 docker load
-# serve
-PAIR_CLUSTER=2 PAIR_HEALTH_TIMEOUT=1900 bash pairctl.sh up mtp3     # or dflash2
-PAIR_CLUSTER=2 bash pairctl.sh --verify   # then: glm53_pair_serve.sh --verify rank-2-mtp3.env on r2
+./pairctl.sh 2 up mtp3-spark    # also mtp3-nvfp4 / df-spark / df-nvfp4 —
+                                # same image, same env values as cluster 1
+./pairctl.sh 2 down             # status / check / logs 0|1 the same way
+PAIR_HEALTH_TIMEOUT=1900 ./pairctl.sh 2 up df-nvfp4   # cold JIT on a fresh image
 ```
-- Pins: vLLM pin `b4f16bd3…` (nero-/vllm branch `osd2/spark-glm53-dev-c646`),
-  b12x `b58f34ea…` (nero-/b12x branch `osd2/spark-glm53-master-20260905`,
-  fetched as branch — dumb-http mirrors can't serve a sha fetch), LMCache
-  builder-default glm52-dcp.3. Toolchain = r22b set. Image 24.9 GB,
-  `0.26.1rc0+glm53.flash.nvfp4.devc646`.
+(The devc646 quick start — build-glm53-devc646.env built on r2 against the
+`~/builds/.git-mirrors` + http.server 4443 trick, B12X_REF passed as a BRANCH
+name, image `glm53-flash-nvfp4-devc646` 24.9 GB @
+`0.26.1rc0+glm53.flash.nvfp4.devc646` with pins vLLM `b4f16bd3…` (branch
+`osd2/spark-glm53-dev-c646`) + b12x `b58f34ea…` (branch
+`osd2/spark-glm53-master-20260905`) + LMCache builder-default — is RETIRED:
+that image was deleted from r2/r3, `pairctl.sh` no longer accepts the bare
+`mtp3`/`dflash2` profile names, and the old `rank-{2,3}-{mtp3,dflash2}.env`
+files remain only as history and will not boot.)
 
 ## Files
 
-- `pairctl.sh` — one-command pair control (`[1|2] up/down/status/logs/check`;
-  profiles mtp3-spark/df-spark/mtp3-nvfp4/df-nvfp4 on cluster 1).
-- `serve/glm53_pair_serve.sh` — the host launcher (deploy to both nodes).
+- `pairctl.sh` — one-command pair control
+  (`[1|2] up/down/status/logs/check`; the same four profile names on BOTH
+  clusters; positional `1|2` or `PAIR_CLUSTER` env; `PAIR_TS=1` remote mode).
+- `serve/glm53_pair_serve.sh` — the host launcher (byte-identical on all four
+  hosts; the `serve/` copy in this repo matches them exactly).
 - `builder/dgx-spark-builder/` — the arm64/SM121 image-builder wrapper + build
-  profiles (`build-glm53-head0906.env` current, `build-glm53-devspark.env`
-  previous line; `build-example.env` is the documented template).
+  profiles (`build-glm53-head0906.env` current, `build-glm53-devspark.env` +
+  `build-glm53-devspark2.env` previous lines, `build-glm53-jovian.env` the
+  reference profile this line was A/B'd against; `build-example.env` is the
+  documented template).
 - `env/rank-{0,1}-{mtp3,df}-{spark,nvfp4}.env` — the four cluster-1 profile
   templates (live host files are ground truth).
-- `env/rank-{2,3}-{mtp3,dflash2}.env` — the cluster-2 devc646 templates (see
-  its section).
+- `env/rank-{2,3}-{mtp3,df}-{spark,nvfp4}.env` — the same four profiles for
+  cluster 2, kept in sync with the live r2/r3 files (IP-scrubbed).
+- `env/rank-{2,3}-{mtp3,dflash2}.env` — RETIRED devc646-era templates (image
+  deleted from r2/r3; kept for history; pairctl cannot select these names).
 - `OPS-GUIDE.md` — operator guide (start, API, OWUI/Hermes/DSH, bench).
 - `runs/` — per-run reports; `bench/` — llm_decode_bench.py + results.
